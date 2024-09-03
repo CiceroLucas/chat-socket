@@ -1,116 +1,92 @@
 import socket
 import threading
 
-clients = {}
-lock = threading.Lock()
+# Configurações do servidor
+HOST = '127.0.0.1'  # Endereço IP do servidor
+PORT = 5000         # Porta que o servidor irá escutar
 
-def broadcast(message, sender_nickname):
-    with lock:
-        for nickname, client_socket in clients.items():
-            if nickname != sender_nickname:
-                try:
-                    client_socket.send(message)
-                except:
-                    client_socket.close()
-                    del clients[nickname]
+# Lista para armazenar os clientes conectados e seus nomes de usuário
+clients = []
+usernames = {}
 
-def handle_client(client_socket, address):
-    global clients
-    
+# Função para broadcast de mensagens para todos os clientes
+def broadcast(message):
+    for client in clients:
+        client.send(message)
+
+# Função para lidar com clientes individuais
+def handle_client(client):
     try:
-        # Receber o nickname do cliente
-        client_socket.send(b"Please provide your nickname: ")
-        nickname = client_socket.recv(1024).decode('utf-8').strip()
-
-        if not nickname:
-            client_socket.send(b"Nickname is required. Disconnecting...")
-            client_socket.close()
-            return
-
-        with lock:
-            clients[nickname] = client_socket
-
-        # Informar a todos sobre o novo usuário
-        broadcast(f"[{nickname}] has joined the chat.".encode('utf-8'), nickname)
-        send_user_list(client_socket)
+        # Recebe o nome de usuário inicial
+        username = client.recv(1024).decode('utf-8')
+        usernames[client] = username
+        welcome_message = f"{username} entrou no chat!".encode('utf-8')
+        print(welcome_message.decode('utf-8'))
+        broadcast(welcome_message)
 
         while True:
-            try:
-                # Receber e processar mensagens dos clientes
-                message = client_socket.recv(1024).decode('utf-8').strip()
-                if not message:
-                    break
+            message = client.recv(1024)
+            if message:
+                decoded_message = message.decode('utf-8')
 
-                command = message.split(' ', 1)
-                if len(command) > 1:
-                    action = command[0]
-                    content = command[1]
+                if decoded_message.startswith('/nome'):
+                    old_username = usernames[client]
+                    new_username = decoded_message.split(' ', 1)[1]
+                    usernames[client] = new_username
+                    name_change_message = f"{old_username} alterou seu nome para {new_username}".encode('utf-8')
+                    print(name_change_message.decode('utf-8'))
+                    broadcast(name_change_message)
+
+                elif decoded_message.startswith('/cutucar'):
+                    target_username = decoded_message.split(' ', 1)[1]
+                    poke_user(client, target_username)
+
                 else:
-                    action = command[0]
-                    content = ""
-
-                dispatch_action(action, content, nickname, client_socket)
-
-            except ConnectionResetError:
+                    full_message = f"{usernames[client]}: {decoded_message}".encode('utf-8')
+                    print(full_message.decode('utf-8'))
+                    broadcast(full_message)
+            else:
+                remove_client(client)
                 break
+    except:
+        remove_client(client)
 
-    finally:
-        handle_disconnection(nickname)
+# Nova função para cutucar um usuário
+def poke_user(client, target_username):
+    found = False
+    for c, name in usernames.items():
+        if name == target_username:
+            poke_message = f"{usernames[client]} te cutucou!".encode('utf-8')
+            c.send(poke_message)
+            found = True
+            break
+    
+    if not found:
+        client.send(f"Usuário {target_username} não encontrado.".encode('utf-8'))
 
-def dispatch_action(action, content, nickname, client_socket):
-    actions = {
-        '!sendmsg': lambda msg: handle_sendmsg(msg, nickname),
-        '!poke': lambda target: handle_poke(target, nickname),
-        '!changenickname': lambda new_nick: handle_changenickname(new_nick, nickname, client_socket),
-    }
+def remove_client(client):
+    if client in clients:
+        clients.remove(client)
+        leave_message = f"{usernames[client]} saiu do chat.".encode('utf-8')
+        print(leave_message.decode('utf-8'))
+        broadcast(leave_message)
+        client.close()
+        del usernames[client]
 
-    action_function = actions.get(action, handle_unknown_command)
-    action_function(content)
-
-def handle_sendmsg(message, nickname):
-    broadcast(f"[{nickname}]: {message}".encode('utf-8'), nickname)
-
-def handle_poke(target_nickname, nickname):
-    if target_nickname in clients:
-        clients[target_nickname].send(f"[{nickname}]: poked you".encode('utf-8'))
-        broadcast(f"{nickname} poked {target_nickname}".encode('utf-8'), nickname)
-    else:
-        clients[nickname].send(f"User {target_nickname} not found.".encode('utf-8'))
-
-def handle_changenickname(new_nickname, old_nickname, client_socket):
-    with lock:
-        if new_nickname in clients:
-            client_socket.send(f"Nickname {new_nickname} already in use.".encode('utf-8'))
-        else:
-            del clients[old_nickname]
-            clients[new_nickname] = client_socket
-            client_socket.send(f"Nickname changed to {new_nickname}.".encode('utf-8'))
-            broadcast(f"! changenickname {old_nickname} {new_nickname}".encode('utf-8'), new_nickname)
-
-def handle_unknown_command(_):
-    pass
-
-def handle_disconnection(nickname):
-    with lock:
-        if nickname in clients:
-            del clients[nickname]
-            broadcast(f"! msg {nickname} has left the chat.".encode('utf-8'))
-
-def send_user_list(client_socket):
-    with lock:
-        users_list = " ".join(clients.keys())
-        client_socket.send(f"Users currently online: {users_list}".encode('utf-8'))
-
-def start_server(host='0.0.0.0', port=12345):
+def receive_connections():
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.bind((host, port))
-    server.listen(5)
-    print(f"Server listening on {host}:{port}")
+    server.bind((HOST, PORT))
+    server.listen()
+
+    print(f"Servidor iniciado em {HOST}:{PORT}")
 
     while True:
-        client_socket, address = server.accept()
-        client_handler = threading.Thread(target=handle_client, args=(client_socket, address))
-        client_handler.start()
+        client, address = server.accept()
+        print(f"Conexão estabelecida com {str(address)}")
+
+        client.send("NOME".encode('utf-8'))
+        threading.Thread(target=handle_client, args=(client,)).start()
+        clients.append(client)
 
 if __name__ == "__main__":
-    start_server()
+    receive_connections()
